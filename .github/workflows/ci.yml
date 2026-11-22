@@ -51,7 +51,7 @@ jobs:
         # que o aviso de EPEL no Rocky passou por verificado sem o ser.
         run: |
           rc=0
-          for f in os rust go python node k8s iac sec obs cli delonix; do
+          for f in os rust go python node k8s iac sec obs cli harden monitor delonix; do
             echo "::group::fase $f"
             if ./toolchain.sh "$f" 2>&1; then :; else echo "::error::fase $f falhou"; rc=1; fi
             echo "::endgroup::"

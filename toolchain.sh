@@ -156,7 +156,8 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 # administra a maquina.
 epel_hint() {
   [ "$(distro_family)" = "rhel" ] || return 0
-  local id; id=$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")
+  local id
+  id=$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")
   case "$id" in fedora) return 0 ;; esac
   dnf repolist enabled 2>/dev/null | grep -qi epel && return 0
   warn "EPEL nao esta activo. Varias ferramentas vivem la:"
@@ -215,13 +216,16 @@ fase_doctor() {
     ss -lnu 2>/dev/null | grep -q ':161 ' && warn "snmpd a escutar em 161: superficie exposta" || warn "snmpd activo: candidato"
   fi
   if systemctl is-enabled systemd-networkd >/dev/null 2>&1; then
-    local n; n=$(networkctl list --no-legend 2>/dev/null | grep -vc unmanaged || echo 0)
+    local n
+    n=$(networkctl list --no-legend 2>/dev/null | grep -vc unmanaged || echo 0)
     [ "${n:-0}" -le 1 ] && warn "systemd-networkd nao gere interface nenhuma: candidato (custa ~2 min de boot)" \
                         || skip "systemd-networkd gere $n interfaces"
   fi
-  local b; b=$(systemd-analyze 2>/dev/null | head -1)
+  local b
+  b=$(systemd-analyze 2>/dev/null | head -1)
   [ -n "$b" ] && say "  arranque: $b"
-  local nf; nf=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
+  local nf
+  nf=$(systemctl --failed --no-legend 2>/dev/null | wc -l)
   [ "$nf" -gt 0 ] && warn "$nf unidades em falha: $(systemctl --failed --no-legend 2>/dev/null | awk '{print $2}' | paste -sd' ')" || ok "0 unidades em falha"
 
   head2 "linguagens"
@@ -385,7 +389,8 @@ print("chaves preservadas:", sorted(k for k in d if k not in ("log-driver","log-
   if grep -qr "resume=" /etc/default/grub /etc/initramfs-tools/conf.d/ 2>/dev/null; then
     skip "hibernacao configurada: nao mexer no swap"
   else
-    local sz; sz=$(awk '/^\/swapfile/{print $3}' /proc/swaps 2>/dev/null)
+    local sz
+    sz=$(awk '/^\/swapfile/{print $3}' /proc/swaps 2>/dev/null)
     if [ -n "$sz" ] && [ "$sz" -gt 20000000 ]; then
       warn "swap de $((sz/1024/1024)) GB sem hibernacao. Para o reduzir a 16 G,"
       warn "a mao (envolve rm de um caminho de topo, decisao de pessoa):"
@@ -565,7 +570,8 @@ fase_go() {
            golang.org/x/vuln/cmd/govulncheck@latest \
            go.uber.org/mock/mockgen@latest \
            github.com/golangci/golangci-lint/cmd/golangci-lint@latest; do
-    local b; b=$(basename "${p%@*}")
+    local b
+    b=$(basename "${p%@*}")
     have "$b" && { skip "$b presente"; continue; }
     run "go install $b" -- go install "$p"
   done
@@ -641,12 +647,16 @@ gh_bin() {
   have "$name" && { skip "$name presente"; return 0; }
   if ! (( APPLY )); then dry "$name <- github:$repo (asset ~ /$apat/, sha256 verificado)"; return 0; fi
 
-  local json; json=$(curl -fsSL --proto '=https' --tlsv1.2 \
+  local json
+
+  json=$(curl -fsSL --proto '=https' --tlsv1.2 \
       -H 'Accept: application/vnd.github+json' \
       "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null) \
     || { no "$name: API do GitHub inacessivel"; return 1; }
 
-  local urls; urls=$(printf '%s' "$json" | python3 -I -c '
+  local urls
+
+  urls=$(printf '%s' "$json" | python3 -I -c '
 import json,sys,re
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(1)
@@ -869,7 +879,8 @@ fase_harden() {
   # correm com a tua identidade. Com NOPASSWD:ALL correm `sudo` sem prompt, e a
   # escalada e silenciosa. Uma senha nao para um atacante determinado, mas
   # quebra a automatizacao.
-  local np; np=$($SUDO grep -rlE '^[^#].*NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | head -3)
+  local np
+  np=$($SUDO grep -rlE '^[^#].*NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | head -3)
   if [ -z "$np" ]; then ok "sem regras NOPASSWD:ALL"
   else
     warn "NOPASSWD:ALL em: $(tr '\n' ' ' <<<"$np")"
@@ -949,7 +960,8 @@ fase_harden() {
     say  "    numa particao nova para os dados sensiveis"
   fi
   if have mokutil; then
-    local sb; sb=$(mokutil --sb-state 2>/dev/null)
+    local sb
+    sb=$(mokutil --sb-state 2>/dev/null)
     grep -qi "enabled" <<<"$sb" && ok "Secure Boot activo" || warn "Secure Boot: $sb"
     grep -qi "setup mode" <<<"$sb" && warn "Setup Mode: o firmware aceita qualquer chave inscrita"
   fi
@@ -1040,12 +1052,14 @@ EOF
     debian) have debsums || pkg debsums debsums - - -
             if have debsums; then
               if (( APPLY )); then
-                local n; n=$($SUDO debsums -c 2>/dev/null | wc -l)
+                local n
+                n=$($SUDO debsums -c 2>/dev/null | wc -l)
                 [ "$n" -eq 0 ] && ok "nenhum ficheiro de pacote alterado" || warn "$n ficheiros alterados: sudo debsums -c"
               else dry "sudo debsums -c  (compara com os checksums do dpkg)"; fi
             fi ;;
     rhel)   if (( APPLY )); then
-              local n; n=$($SUDO rpm -Va --nomtime --nosize 2>/dev/null | grep -c '^..5') 
+              local n
+              n=$($SUDO rpm -Va --nomtime --nosize 2>/dev/null | grep -c '^..5') 
               [ "${n:-0}" -eq 0 ] && ok "nenhum ficheiro de pacote alterado" || warn "$n com checksum diferente: sudo rpm -Va"
             else dry "sudo rpm -Va --nomtime  (verificacao nativa do rpm)"; fi ;;
     arch)   have paccheck && { (( APPLY )) && run "paccheck" -- $SUDO paccheck --md5sum --quiet || dry "paccheck --md5sum"; } \
@@ -1059,13 +1073,15 @@ EOF
     mkdir -p "$BASELINE"
     local novo="$BASELINE/snapshot-$(date +%Y%m%d-%H%M%S).txt"
     snapshot_persistencia "$novo"
-    local ant; ant=$(find "$BASELINE" -name 'snapshot-*.txt' ! -name "$(basename "$novo")" 2>/dev/null | sort | tail -1)
+    local ant
+    ant=$(find "$BASELINE" -name 'snapshot-*.txt' ! -name "$(basename "$novo")" 2>/dev/null | sort | tail -1)
     if [ -z "$ant" ]; then
       ok "primeira linha de base: $(wc -l < "$novo") entradas em $novo"
       warn "a base inicial so vale se a maquina estiver limpa AGORA. Guarda uma"
       warn "copia fora da maquina: um atacante com root reescreve a base local."
     else
-      local d; d=$(diff "$ant" "$novo" | grep -cE '^[<>]')
+      local d
+      d=$(diff "$ant" "$novo" | grep -cE '^[<>]')
       if [ "$d" -eq 0 ]; then ok "sem alteracoes desde $(basename "$ant")"
       else
         warn "$d linhas mudaram desde $(basename "$ant"):"
