@@ -1101,8 +1101,27 @@ fase_monitor() {
 EOF
       $SUDO sed -i "s|__HOME__|$HOME|g" "$rf"
       revert_note "sudo rm -f $rf && sudo augenrules --load"
-      $SUDO augenrules --load >/dev/null 2>&1 && $SUDO systemctl enable --now auditd >/dev/null 2>&1 \
-        && ok "regras carregadas ($( $SUDO auditctl -l 2>/dev/null | wc -l ) activas)" || no "auditd"
+      # A saida do augenrules VAI para o log, nao para /dev/null: e ela que diz
+      # qual regra foi rejeitada e porque. Com 2>&1 >/dev/null, um carregamento
+      # parcial fica indistinguivel de um completo — e foi o que aconteceu a
+      # 2026-11-22, com 11 de 15 regras activas e nenhuma pista no log.
+      local saida_ar rc_ar
+      saida_ar=$($SUDO augenrules --load 2>&1); rc_ar=$?
+      [ -n "$saida_ar" ] && printf '%s\n' "$saida_ar" >> "$LOG"
+      $SUDO systemctl enable --now auditd >>"$LOG" 2>&1
+
+      # Contar o que o kernel REALMENTE tem, e comparar com o que o ficheiro
+      # pede. Reportar "carregadas" sem verificar e assumir.
+      local n_pedidas n_activas
+      n_pedidas=$(grep -cE '^-[wa] ' "$rf" 2>/dev/null || echo 0)
+      n_activas=$($SUDO auditctl -l 2>/dev/null | grep -cE '^-[wa] ' || echo 0)
+      if [ "$rc_ar" -eq 0 ] && [ "${n_activas:-0}" -ge "${n_pedidas:-99}" ]; then
+        ok "$n_activas de $n_pedidas regras activas"
+      else
+        no "so $n_activas de $n_pedidas regras activas (augenrules exit $rc_ar)"
+        [ -n "$saida_ar" ] && printf '%s\n' "$saida_ar" | head -5 | sed 's/^/      /' | tee -a "$LOG"
+        warn "para ver o detalhe:  sudo augenrules --load"
+      fi
       say "  consultar:  sudo ausearch -k persist_sudo -i | tail"
       say "              sudo ausearch -k root_exec -i | tail"
     else dry "/etc/audit/rules.d/99-toolchain.rules com 12 regras de persistencia + root_exec"; fi
@@ -1316,8 +1335,11 @@ if (( APPLY )); then
   say "aplicado. log: $LOG"
   [ -s "$STATE_DIR/revert.log" ] && say "para reverter mudancas de sistema: $STATE_DIR/revert.log"
 else
-  say "DRY-RUN: nada foi alterado."
-  say "para executar:  $0 $PHASE --apply"
+  case "$PHASE" in
+    doctor|selftest) say "fase de leitura: nao tem modo --apply." ;;
+    *) say "DRY-RUN: nada foi alterado."
+       say "para executar:  $0 $PHASE --apply" ;;
+  esac
 fi
 
 # Propagar a falha. Sem isto o script acaba sempre em `say`, sai 0, e um teste
