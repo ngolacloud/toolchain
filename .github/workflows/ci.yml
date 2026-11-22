@@ -43,6 +43,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: doctor
         run: ./toolchain.sh doctor
+
+      - name: selftest — valida o conteudo gerado pelos blocos --apply
+        # O dry-run nao alcanca nada dentro de `(( APPLY ))`, e foi la que
+        # viveu o unico bug que chegou a correr numa maquina: um backtick num
+        # comentario dentro de heredoc expansivel, executado pelo shell.
+        run: ./toolchain.sh selftest
       - name: todas as fases em dry-run
         # A saida e SEMPRE mostrada, agrupada por fase. Na primeira versao ia
         # para /tmp/out e so aparecia em caso de falha: a CI provava "sai com 0"

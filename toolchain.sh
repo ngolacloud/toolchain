@@ -20,6 +20,7 @@
 #   sec       trivy grype syft cosign sops age vault hadolint dive skopeo
 #   obs       k6 oha promtool amtool
 #   cli       jq yq fd bat delta zoxide lazygit btop duf dust just direnv iperf3
+#   selftest  valida o conteudo gerado pelos blocos --apply, sem o aplicar
 #   harden    fundacoes de seguranca: sudo, firewall, chaves, cifra, Secure Boot
 #   monitor   auditd, integridade de pacotes, linha de base de persistencia
 #   delonix   chama o INSTALADOR OFICIAL do Delonix Runtime (nao reimplementa)
@@ -458,7 +459,9 @@ EOF
   else dry "$sc com [cache.disk] size = 10 GiB"; fi
 
   say ""
-  (( APPLY )) && say "Revert: $STATE_DIR/revert.log"
+  # `cond && cmd` como ultima instrucao devolve 1 quando cond e falsa, e isso
+  # torna-se o retorno da funcao. O `|| true` fecha isso.
+  (( APPLY )) && say "Revert: $STATE_DIR/revert.log" || true
 }
 
 # =============================================================================
@@ -1057,7 +1060,11 @@ fase_monitor() {
       # Vigiar os sitios onde um backdoor TEM de escrever, nao "tudo".
       # A ultima regra responde ao cenario mais provavel num portatil de
       # desenvolvimento: codigo de terceiros, executado por ti, a escalar.
-      $SUDO tee "$rf" >/dev/null <<EOF
+      # Heredoc LITERAL (<<'EOF'): nada se expande dentro dele. O caminho do
+      # home entra depois, por sed. Com <<EOF sem aspas, um backtick num
+      # comentario e substituicao de comando — foi o que quebrou esta funcao a
+      # 2026-11-22: `never` e `always` em prosa foram executados como comandos.
+      $SUDO tee "$rf" >/dev/null <<'EOF'
 -w /etc/systemd/system -p wa -k persist_systemd
 -w /etc/cron.d -p wa -k persist_cron
 -w /etc/sudoers -p wa -k persist_sudo
@@ -1066,30 +1073,33 @@ fase_monitor() {
 -w /etc/ld.so.preload -p wa -k persist_preload
 -w /usr/local/bin -p wa -k persist_localbin
 -w /usr/local/sbin -p wa -k persist_localbin
--w $HOME/.ssh -p wa -k persist_ssh
--w $HOME/.config/systemd/user -p wa -k persist_user_units
--w $HOME/.config/autostart -p wa -k persist_autostart
+-w __HOME__/.ssh -p wa -k persist_ssh
+-w __HOME__/.config/systemd/user -p wa -k persist_user_units
+-w __HOME__/.config/autostart -p wa -k persist_autostart
 
-# As ferramentas de consulta do proprio auditd geram entradas ao serem usadas:
-# cada `ausearch` aparece no registo que esta a ler. Estas regras `never` vem
-# ANTES da regra `always` de proposito — a primeira que casa decide.
+# As ferramentas de consulta do auditd geram entradas ao serem usadas: cada
+# ausearch aparece no registo que esta a ler. Estas regras never vem ANTES da
+# regra always de proposito, porque a primeira que casa decide.
 -a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/ausearch
 -a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/aureport
 -a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/auditctl
 
 # Cada execucao como root a partir de uma sessao de utilizador.
 #
-# O campo que torna isto util e o `tty`. Uma escalada que TU fizeste tem um
-# terminal: tty=pts4. Um build.rs de uma crate ou um postinstall de npm a
-# chamar sudo corre SEM terminal, e aparece como tty=(none). Essa e a
-# assinatura do cenario mais provavel numa maquina de desenvolvimento:
+# ATENCAO ao campo tty: NAO e uma assinatura fiavel de script de build.
+# Medido nesta configuracao: contentores rootless produzem ~384 escaladas sem
+# tty por dia (newuidmap/newgidmap, setuid root, invocados pelo podman), e
+# qualquer ferramenta que corra sem terminal aparece igual. O tty separa
+# "humano num terminal" de "todo o resto", e todo o resto inclui a tua
+# infraestrutura normal.
 #
-#   sudo ausearch -k root_exec -i -ts today | grep type=SYSCALL \
-#     | grep 'tty=(none)' | grep -oE 'comm=\S+' | sort | uniq -c | sort -rn
-#
-# Num dia normal: nada, ou so servicos do sistema.
+# O que funciona e o CONJUNTO de nomes, comparado dia a dia:
+#   ausearch -k root_exec -i -ts today | grep type=SYSCALL |
+#     grep "tty=(none)" | grep -oE "comm=[^ ]+" | sort -u
+# Um nome novo e o sinal. A contagem nao e.
 -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k root_exec
 EOF
+      $SUDO sed -i "s|__HOME__|$HOME|g" "$rf"
       revert_note "sudo rm -f $rf && sudo augenrules --load"
       $SUDO augenrules --load >/dev/null 2>&1 && $SUDO systemctl enable --now auditd >/dev/null 2>&1 \
         && ok "regras carregadas ($( $SUDO auditctl -l 2>/dev/null | wc -l ) activas)" || no "auditd"
@@ -1186,26 +1196,103 @@ EOF
 }
 
 # =============================================================================
+# SELFTEST — exercita o que o dry-run NAO alcanca.
+#
+# A matriz de CI corre todas as fases em dry-run, o que valida que o script
+# corre em cada familia de distro. Mas tudo o que esta dentro de `(( APPLY ))`
+# fica sem teste — e foi exactamente la que viveu o unico bug que chegou a
+# producao: um backtick num comentario dentro de um heredoc `<<EOF` sem aspas,
+# que o shell executou como comando. O shellcheck nao o apanha (e sintaxe
+# valida) e o dry-run nunca o alcanca.
+#
+# Esta fase valida o CONTEUDO gerado, sem o aplicar.
+# =============================================================================
+fase_selftest() {
+  local falhas=0
+
+  head2 "heredocs: nenhum conteudo literal deve conter expansao de shell"
+  # Um heredoc <<'EOF' e literal e seguro. Um <<EOF expande $, ` e \ — e um
+  # comentario em prosa com backticks passa a ser codigo.
+  # Um <<EOF sem aspas e legitimo quando se QUER expandir $HOME ou $PWD. O
+  # perigo e o CONTEUDO: um backtick ou um $( ) em prosa passa a ser executado.
+  # Um teste que sinalize todos os <<EOF e ruido, e ruido e ignorado.
+  local mau
+  mau=$(awk '
+    /<<EOF[[:space:]]*$/ { dentro=1; inicio=NR; achou=0; next }
+    dentro && /^EOF$/ { if (achou) print inicio; dentro=0; next }
+    dentro && (/`/ || /\$\(/) { achou=1 }
+  ' "$0")
+  if [ -n "$mau" ]; then
+    local ln
+    for ln in $mau; do no "heredoc <<EOF na linha $ln contem backtick ou \$( ) — sera EXECUTADO"; done
+    falhas=$((falhas+1))
+  else
+    ok "nenhum heredoc expansivel com backtick ou \$( ) no conteudo"
+    local n_exp
+    n_exp=$(grep -cE "<<EOF[[:space:]]*$" "$0" || true)
+    [ "${n_exp:-0}" -gt 0 ] && say "    ($n_exp heredocs <<EOF expandem de proposito: \$HOME, \$PWD nas unidades)"
+  fi
+
+  head2 "regras do auditd: conteudo renderizado"
+  local tmp
+  tmp=$(mktemp)
+  sed -n "/tee \"\\\$rf\" >\/dev\/null <<'EOF'/,/^EOF\$/p" "$0" | sed '1d;$d' | sed "s|__HOME__|$HOME|g" > "$tmp"
+  local nregras nperigo nhome
+  nregras=$(grep -cE '^-[wa] ' "$tmp" || true)
+  nperigo=$(grep -cE '[`$]' "$tmp" || true)
+  nhome=$(grep -c "$HOME" "$tmp" || true)
+  [ "${nregras:-0}" -ge 15 ] && ok "$nregras regras renderizadas" || { no "so $nregras regras (esperadas >=15)"; falhas=$((falhas+1)); }
+  [ "${nperigo:-0}" -eq 0 ] && ok "sem backticks nem \$ no conteudo" || { no "$nperigo linhas com backtick ou \$ — serao executadas"; falhas=$((falhas+1)); }
+  [ "${nhome:-0}" -ge 3 ] && ok "$nhome caminhos do home resolvidos" || { no "placeholder __HOME__ nao substituido"; falhas=$((falhas+1)); }
+  # A ordem importa: as regras `never` TEM de vir antes da `always`.
+  local l_never l_always
+  l_never=$(grep -n 'never,exit' "$tmp" | tail -1 | cut -d: -f1)
+  l_always=$(grep -n 'always,exit' "$tmp" | head -1 | cut -d: -f1)
+  if [ -n "$l_never" ] && [ -n "$l_always" ] && [ "$l_never" -lt "$l_always" ]; then
+    ok "regras never antes da always (a primeira que casa decide)"
+  else no "ordem das regras errada: never na linha ${l_never:-?}, always na ${l_always:-?}"; falhas=$((falhas+1)); fi
+  rm -f "$tmp"
+
+  head2 "unidades systemd geradas: sintaxe"
+  local u
+  for u in cargo-sweep toolchain-monitor; do
+    sed -n "/cat > \"\\\$ud\/$u.service\"/,/^EOF\$/p" "$0" | grep -qE '^\[Unit\]|^\[Service\]' \
+      && ok "$u.service tem as seccoes obrigatorias" \
+      || { no "$u.service sem [Unit]/[Service]"; falhas=$((falhas+1)); }
+  done
+
+  head2 "run(): a descricao nunca entra no comando"
+  grep -qE 'run\(\) \{\s*$' "$0" && grep -A3 'run() {' "$0" | grep -q 'shift' \
+    && ok "run() descarta a descricao antes de executar" \
+    || { no "run() pode executar a descricao como comando"; falhas=$((falhas+1)); }
+
+  say ""
+  [ "$falhas" -eq 0 ] && ok "selftest: tudo passou" || { no "selftest: $falhas verificacoes falharam"; return 1; }
+}
+
+# =============================================================================
 # DESPACHO
 # =============================================================================
 say "toolchain.sh — fase: $PHASE $( (( APPLY )) && echo '[APLICAR]' || echo '[DRY-RUN]')"
 say "log: $LOG"
 
+RC=0
 case "$PHASE" in
-  doctor)  fase_doctor ;;
-  os)      fase_os ;;
+  doctor)  fase_doctor || RC=$? ;;
+  os)      fase_os || RC=$? ;;
   rust)    fase_rust "$@" ;;
-  go)      fase_go ;;
-  python)  fase_python ;;
-  node)    fase_node ;;
-  k8s)     fase_k8s ;;
-  iac)     fase_iac ;;
-  sec)     fase_sec ;;
-  obs)     fase_obs ;;
-  cli)     fase_cli ;;
-  harden)  fase_harden ;;
-  monitor) fase_monitor ;;
-  delonix) fase_delonix ;;
+  go)      fase_go || RC=$? ;;
+  python)  fase_python || RC=$? ;;
+  node)    fase_node || RC=$? ;;
+  k8s)     fase_k8s || RC=$? ;;
+  iac)     fase_iac || RC=$? ;;
+  sec)     fase_sec || RC=$? ;;
+  obs)     fase_obs || RC=$? ;;
+  cli)     fase_cli || RC=$? ;;
+  selftest) fase_selftest || RC=$? ;;
+  harden)  fase_harden || RC=$? ;;
+  monitor) fase_monitor || RC=$? ;;
+  delonix) fase_delonix || RC=$? ;;
   all)
     # O delonix fica DE FORA do `all` de proposito: mexe em subuid/subgid,
     # AppArmor e politica de seguranca do host, e isso merece uma decisao
@@ -1219,7 +1306,7 @@ case "$PHASE" in
     sed -n '2,45p' "$0"; exit 0 ;;
   *)
     say "fase desconhecida: $PHASE"
-    say "fases: doctor os rust go python node k8s iac sec obs cli harden monitor delonix all"
+    say "fases: doctor selftest os rust go python node k8s iac sec obs cli harden monitor delonix all"
     exit 2 ;;
 esac
 
@@ -1232,3 +1319,9 @@ else
   say "DRY-RUN: nada foi alterado."
   say "para executar:  $0 $PHASE --apply"
 fi
+
+# Propagar a falha. Sem isto o script acaba sempre em `say`, sai 0, e um teste
+# que FALHOU deixa a CI verde — o pior resultado possivel num gate.
+# Encontrado a 2026-11-22 pelo proprio selftest.
+[ "$RC" -ne 0 ] && say "" && say "fase $PHASE terminou com falhas (exit $RC)"
+exit "$RC"
