@@ -220,6 +220,69 @@ administra a máquina.
 `jq`, `yq`, `fd`, `ripgrep`, `bat`, `delta`, `btop`, `duf`, `dust`, `just`,
 `direnv`, `zoxide`, `lazygit`, `gh`.
 
+### `harden` — fundações de segurança
+
+Sem estas, monitorizar é observar a porta aberta.
+
+| verificação | porquê |
+|---|---|
+| `NOPASSWD:ALL` no sudo | um `build.rs` de crate, um `postinstall` de npm ou um `go generate` correm com a tua identidade. Com `NOPASSWD`, correm `sudo` sem prompt |
+| grupo `docker` | quem está nele monta `/` num contentor; é equivalente a root por outra via |
+| `ufw` realmente activo | `systemctl is-enabled ufw` dizer `enabled` **não** significa que o firewall esteja a filtrar |
+| chaves SSH sem passphrase | detectadas pelo **conteúdo** (cabeçalho PEM/OpenSSH), não pelo nome: `id_*` deixa passar as outras |
+| cifra do disco | reportado, não automatizado |
+| Secure Boot e Setup Mode | reportado, não automatizado |
+| AppArmor em enforce | quantos perfis confinam de facto |
+
+A regra `NOPASSWD` é **comentada**, não apagada, e o ficheiro é validado com
+`visudo -c` antes de se confiar nela — se reprovar, restaura do backup. Antes
+de activar o `ufw`, permite-se a entrada em `lo` e em cada ponte encontrada,
+senão as VMs e os contentores perdem DHCP e DNS.
+
+Melhor do que filtrar é não expor: um serviço a escutar em `127.0.0.1` em vez
+de `0.0.0.0` remove a exposição na origem.
+
+### `monitor` — linha de base e diferença
+
+O que detecta um backdoor num portátil não é um agente em tempo real: é
+**comparar hoje com ontem**.
+
+**`auditd` nos pontos onde um backdoor tem de escrever** para sobreviver a um
+reboot — unidades systemd do sistema e do utilizador, `cron.d`, `sudoers.d`,
+`pam.d`, `ld.so.preload`, `/usr/local/bin`, `~/.ssh`, `~/.config/autostart` —
+mais uma regra que registra cada `execve` como root a partir de uma sessão de
+utilizador. É essa última que cobre o cenário mais provável: código de
+terceiros, executado por ti, a escalar.
+
+```bash
+sudo ausearch -k persist_sudo -i | tail
+sudo ausearch -k root_exec -i | tail
+```
+
+**Integridade dos ficheiros de pacotes**, com a ferramenta nativa de cada
+família: `debsums -c` no Debian, `rpm -Va` no Red Hat, `paccheck --md5sum` no
+Arch.
+
+**Inventário comparado**: portas a escutar, unidades systemd, cron, autostart,
+regras udev, `sudoers.d`, binários setuid e grupos do utilizador. Guardado em
+`~/.local/state/toolchain/baseline/` e comparado com o anterior, com um timer
+de utilizador diário.
+
+A primeira base só vale se a máquina estiver limpa no momento em que é criada,
+e **uma cópia deve viver fora da máquina**: um atacante com root reescreve a
+base local.
+
+### O que estas fases não instalam, e porquê
+
+- **`rkhunter` e `chkrootkit`** procuram assinaturas de rootkits antigos, dão
+  muitos falsos positivos com contentores e snaps, e não encontram nada que a
+  linha de base não encontre melhor.
+- **Falco ou Tetragon** são excelentes num cluster, onde a carga é homogénea.
+  Numa estação de trabalho produzem ruído constante e acabam ignorados — e
+  monitorização ignorada é pior que nenhuma, porque dá sensação de cobertura.
+- **Antivírus**: num Linux de desenvolvimento encontra sobretudo malware de
+  Windows em anexos. Não cobre código de build nem disco roubado.
+
 ### `delonix`
 
 Instala o **Delonix Runtime** — motor de contentores e VMs.

@@ -20,6 +20,8 @@
 #   sec       trivy grype syft cosign sops age vault hadolint dive skopeo
 #   obs       k6 oha promtool amtool
 #   cli       jq yq fd bat delta zoxide lazygit btop duf dust just direnv iperf3
+#   harden    fundacoes de seguranca: sudo, firewall, chaves, cifra, Secure Boot
+#   monitor   auditd, integridade de pacotes, linha de base de persistencia
 #   delonix   chama o INSTALADOR OFICIAL do Delonix Runtime (nao reimplementa)
 #   all       os-rust-go-python-node-k8s-iac-sec-obs-cli (delonix fica de fora)
 #
@@ -859,6 +861,263 @@ fase_delonix() {
 }
 
 # =============================================================================
+# HARDEN — fundacoes. Sem estas, monitorizar e observar a porta aberta.
+# =============================================================================
+fase_harden() {
+  head2 "sudo sem senha — o vector mais barato de fechar"
+  # Um `build.rs` de uma crate, um `postinstall` de npm ou um `go generate`
+  # correm com a tua identidade. Com NOPASSWD:ALL correm `sudo` sem prompt, e a
+  # escalada e silenciosa. Uma senha nao para um atacante determinado, mas
+  # quebra a automatizacao.
+  local np; np=$($SUDO grep -rlE '^[^#].*NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | head -3)
+  if [ -z "$np" ]; then ok "sem regras NOPASSWD:ALL"
+  else
+    warn "NOPASSWD:ALL em: $(tr '\n' ' ' <<<"$np")"
+    warn "qualquer processo teu obtem root sem prompt — incluindo scripts de build"
+    say  "    Se precisas de comandos sem senha, declara ESSES em vez de ALL:"
+    say  "      walter ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart <servico>"
+    if (( APPLY )); then
+      local f; for f in $np; do
+        $SUDO cp -a "$f" "$f.bak-toolchain"
+        revert_note "sudo cp -a $f.bak-toolchain $f"
+        # Comenta a regra em vez de apagar o ficheiro: reversivel e auditavel.
+        $SUDO sed -i -E 's/^([^#].*NOPASSWD:[[:space:]]*ALL.*)$/# desactivado por toolchain harden: \1/' "$f"
+      done
+      if $SUDO visudo -c >/dev/null 2>&1; then
+        $SUDO -n true 2>/dev/null && no "ainda passa sem senha — verifica $np" || ok "sudo passa a pedir senha"
+      else
+        no "visudo -c reprovou: a restaurar do backup"
+        for f in $np; do $SUDO cp -a "$f.bak-toolchain" "$f"; done
+      fi
+    else dry "comenta a regra NOPASSWD:ALL, valida com visudo -c, restaura se reprovar"; fi
+  fi
+
+  head2 "grupo docker: equivalente a root"
+  id -nG | tr ' ' '\n' | grep -qx docker \
+    && warn "estas no grupo docker. Quem esta nele monta / num contentor e escreve onde quiser. Para rootless: podman, ou o modo rootless do Delonix" \
+    || ok "fora do grupo docker"
+
+  head2 "firewall"
+  if ! have ufw; then warn "ufw ausente"; else
+    if $SUDO ufw status 2>/dev/null | grep -qi "Status: active"; then ok "ufw activo"
+    else
+      warn "ufw INACTIVO (a unidade estar 'enabled' nao e a mesma coisa)"
+      say  "  o que esta a escutar em todas as interfaces:"
+      $SUDO ss -lntH 2>/dev/null | awk '$4 ~ /^(0\.0\.0\.0|\[::\])/ {print "    "$4}' | sort -u | head -8
+      warn "antes de activar: as pontes de VMs e contentores precisam de passar,"
+      warn "senao as VMs perdem DHCP e DNS. Melhor ainda e por os servicos a"
+      warn "escutar so em 127.0.0.1, o que remove a exposicao na origem."
+      if (( APPLY )); then
+        revert_note "sudo ufw disable"
+        $SUDO ufw --force default deny incoming >/dev/null 2>&1
+        $SUDO ufw --force default allow outgoing >/dev/null 2>&1
+        $SUDO ufw allow in on lo >/dev/null 2>&1
+        local br
+        for br in $(ip -br link show type bridge 2>/dev/null | awk '{print $1}'); do
+          $SUDO ufw allow in on "$br" >/dev/null 2>&1 && say "    permitido: $br"
+        done
+        $SUDO ufw --force enable >/dev/null 2>&1 && ok "ufw activo (deny incoming, pontes permitidas)" || no "ufw enable"
+      else dry "default deny incoming, allow lo e cada ponte, depois ufw enable"; fi
+    fi
+  fi
+
+  head2 "chave SSH sem passphrase"
+  # Todas as chaves privadas, nao so as que se chamam id_*: a verificacao
+  # inicial desta auditoria olhou apenas para id_* e deixou passar uma segunda
+  # chave sem passphrase. Detecta-se pelo CONTEUDO (cabecalho PEM/OpenSSH),
+  # que e o que define uma chave privada, nao pelo nome.
+  local k found=0
+  while IFS= read -r k; do
+    [ -f "$k" ] || continue
+    if ! grep -q "ENCRYPTED\|bcrypt" "$k" 2>/dev/null; then
+      warn "$(basename "$k") sem passphrase — num disco sem cifra, e a tua identidade em claro"
+      say  "    ssh-keygen -p -f $k"
+      found=1
+    fi
+  done < <(grep -rlE "^-----BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY-----" "$HOME/.ssh" 2>/dev/null | sort -u)
+  [ "$found" -eq 0 ] && ok "chaves privadas protegidas ou inexistentes"
+
+  head2 "cifra do disco e Secure Boot — nao automatizavel"
+  if [ -s /etc/crypttab ] || lsblk -o FSTYPE 2>/dev/null | grep -q crypto_LUKS; then
+    ok "LUKS presente"
+  else
+    warn "RAIZ NAO CIFRADA. Nenhuma monitorizacao compensa um disco que sai"
+    warn "da tua posse: chaves SSH, tokens, senhas do browser e dados de"
+    warn "clientes ficam legiveis ao remover o SSD."
+    say  "    caminhos: reinstalar com LUKS (seguro) · cryptsetup reencrypt"
+    say  "    (no lugar, exige backup verificado e corrente) · ou LUKS apenas"
+    say  "    numa particao nova para os dados sensiveis"
+  fi
+  if have mokutil; then
+    local sb; sb=$(mokutil --sb-state 2>/dev/null)
+    grep -qi "enabled" <<<"$sb" && ok "Secure Boot activo" || warn "Secure Boot: $sb"
+    grep -qi "setup mode" <<<"$sb" && warn "Setup Mode: o firmware aceita qualquer chave inscrita"
+  fi
+
+  head2 "AppArmor"
+  if have aa-status; then
+    local tot enf
+    tot=$($SUDO aa-status 2>/dev/null | awk '/profiles are loaded/{print $1}')
+    enf=$($SUDO aa-status 2>/dev/null | awk '/profiles are in enforce/{print $1}')
+    say "  $enf de $tot perfis em enforce"
+    [ "${enf:-0}" -lt "${tot:-1}" ] && warn "os restantes nao confinam nada"
+  fi
+}
+
+# =============================================================================
+# MONITOR — linha de base e diferenca. O que detecta um backdoor num portatil
+# nao e um agente em tempo real: e comparar hoje com ontem.
+# =============================================================================
+BASELINE="$STATE_DIR/baseline"
+
+snapshot_persistencia() {
+  local out="$1"; mkdir -p "$(dirname "$out")"
+  {
+    echo "## portas a escutar"
+    $SUDO ss -lntuH 2>/dev/null | awk '{print $1, $5}' | sort -u
+    echo "## unidades systemd do sistema (nao-pacote)"
+    $SUDO find /etc/systemd/system -maxdepth 2 \( -name '*.service' -o -name '*.timer' \) 2>/dev/null | sort
+    echo "## unidades do utilizador"
+    find "$HOME/.config/systemd/user" \( -name '*.service' -o -name '*.timer' \) 2>/dev/null | sort
+    echo "## cron"
+    $SUDO ls -1 /etc/cron.d /etc/cron.daily /etc/cron.hourly 2>/dev/null | sort -u
+    crontab -l 2>/dev/null | grep -vE '^#|^$' | sort
+    echo "## autostart"
+    ls -1 "$HOME/.config/autostart" 2>/dev/null | sort
+    echo "## udev local"
+    ls -1 /etc/udev/rules.d 2>/dev/null | sort
+    echo "## sudoers.d"
+    $SUDO ls -1 /etc/sudoers.d 2>/dev/null | sort
+    $SUDO grep -rhE '^[^#]' /etc/sudoers.d/ 2>/dev/null | sort
+    echo "## ld.so.preload"
+    cat /etc/ld.so.preload 2>/dev/null
+    echo "## authorized_keys"
+    cat "$HOME/.ssh/authorized_keys" 2>/dev/null | awk '{print $1, $3}'
+    echo "## grupos do utilizador"
+    id -nG | tr ' ' '\n' | sort
+    echo "## binarios setuid"
+    $SUDO find /usr /opt -xdev -perm -4000 -type f 2>/dev/null | sort
+  } > "$out" 2>/dev/null
+}
+
+fase_monitor() {
+  head2 "auditd: registar escritas nos pontos de persistencia"
+  if ! have auditctl; then
+    pkg auditctl auditd audit audit audit || warn "instala o auditd primeiro"
+  fi
+  if have auditctl; then
+    local rf=/etc/audit/rules.d/99-toolchain.rules
+    if [ -f "$rf" ]; then skip "regras ja instaladas"
+    elif (( APPLY )); then
+      $SUDO mkdir -p /etc/audit/rules.d
+      # Vigiar os sitios onde um backdoor TEM de escrever, nao "tudo".
+      # A ultima regra responde ao cenario mais provavel num portatil de
+      # desenvolvimento: codigo de terceiros, executado por ti, a escalar.
+      $SUDO tee "$rf" >/dev/null <<EOF
+-w /etc/systemd/system -p wa -k persist_systemd
+-w /etc/cron.d -p wa -k persist_cron
+-w /etc/sudoers -p wa -k persist_sudo
+-w /etc/sudoers.d -p wa -k persist_sudo
+-w /etc/pam.d -p wa -k persist_pam
+-w /etc/ld.so.preload -p wa -k persist_preload
+-w /usr/local/bin -p wa -k persist_localbin
+-w /usr/local/sbin -p wa -k persist_localbin
+-w $HOME/.ssh -p wa -k persist_ssh
+-w $HOME/.config/systemd/user -p wa -k persist_user_units
+-w $HOME/.config/autostart -p wa -k persist_autostart
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k root_exec
+EOF
+      revert_note "sudo rm -f $rf && sudo augenrules --load"
+      $SUDO augenrules --load >/dev/null 2>&1 && $SUDO systemctl enable --now auditd >/dev/null 2>&1 \
+        && ok "regras carregadas ($( $SUDO auditctl -l 2>/dev/null | wc -l ) activas)" || no "auditd"
+      say "  consultar:  sudo ausearch -k persist_sudo -i | tail"
+      say "              sudo ausearch -k root_exec -i | tail"
+    else dry "/etc/audit/rules.d/99-toolchain.rules com 12 regras de persistencia + root_exec"; fi
+  fi
+
+  head2 "integridade dos ficheiros de pacotes"
+  case "$(distro_family)" in
+    debian) have debsums || pkg debsums debsums - - -
+            if have debsums; then
+              if (( APPLY )); then
+                local n; n=$($SUDO debsums -c 2>/dev/null | wc -l)
+                [ "$n" -eq 0 ] && ok "nenhum ficheiro de pacote alterado" || warn "$n ficheiros alterados: sudo debsums -c"
+              else dry "sudo debsums -c  (compara com os checksums do dpkg)"; fi
+            fi ;;
+    rhel)   if (( APPLY )); then
+              local n; n=$($SUDO rpm -Va --nomtime --nosize 2>/dev/null | grep -c '^..5') 
+              [ "${n:-0}" -eq 0 ] && ok "nenhum ficheiro de pacote alterado" || warn "$n com checksum diferente: sudo rpm -Va"
+            else dry "sudo rpm -Va --nomtime  (verificacao nativa do rpm)"; fi ;;
+    arch)   have paccheck && { (( APPLY )) && run "paccheck" -- $SUDO paccheck --md5sum --quiet || dry "paccheck --md5sum"; } \
+              || warn "pacutils (paccheck) da a verificacao equivalente no Arch" ;;
+  esac
+
+  head2 "linha de base da superficie de persistencia"
+  # Isto e o nucleo: um inventario guardado e comparado. Um backdoor tem de
+  # escrever em algum destes sitios para sobreviver a um reboot.
+  if (( APPLY )); then
+    mkdir -p "$BASELINE"
+    local novo="$BASELINE/snapshot-$(date +%Y%m%d-%H%M%S).txt"
+    snapshot_persistencia "$novo"
+    local ant; ant=$(find "$BASELINE" -name 'snapshot-*.txt' ! -name "$(basename "$novo")" 2>/dev/null | sort | tail -1)
+    if [ -z "$ant" ]; then
+      ok "primeira linha de base: $(wc -l < "$novo") entradas em $novo"
+      warn "a base inicial so vale se a maquina estiver limpa AGORA. Guarda uma"
+      warn "copia fora da maquina: um atacante com root reescreve a base local."
+    else
+      local d; d=$(diff "$ant" "$novo" | grep -cE '^[<>]')
+      if [ "$d" -eq 0 ]; then ok "sem alteracoes desde $(basename "$ant")"
+      else
+        warn "$d linhas mudaram desde $(basename "$ant"):"
+        diff "$ant" "$novo" | grep -E '^[<>]' | head -20 | sed 's/^/    /'
+        say  "    completo:  diff $ant $novo"
+      fi
+    fi
+  else dry "snapshot de portas, unidades, cron, autostart, udev, sudoers, setuid, grupos — e diff com o anterior"; fi
+
+  head2 "timer diario da comparacao"
+  local ud="$HOME/.config/systemd/user"
+  if [ -f "$ud/toolchain-monitor.timer" ]; then skip "timer ja existe"
+  elif (( APPLY )); then
+    mkdir -p "$ud"
+    cat > "$ud/toolchain-monitor.service" <<EOF
+[Unit]
+Description=toolchain monitor — diferenca da superficie de persistencia
+
+[Service]
+Type=oneshot
+Nice=19
+ExecStart=$PWD/toolchain.sh monitor --apply
+EOF
+    cat > "$ud/toolchain-monitor.timer" <<'EOF'
+[Unit]
+Description=Compara a superficie de persistencia uma vez por dia
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+    revert_note "systemctl --user disable --now toolchain-monitor.timer && rm -f $ud/toolchain-monitor.{service,timer}"
+    systemctl --user daemon-reload && systemctl --user enable --now toolchain-monitor.timer \
+      && ok "timer diario activo" || no "timer de monitorizacao"
+  else dry "timer de utilizador diario a correr 'toolchain.sh monitor --apply'"; fi
+
+  head2 "o que NAO instalo, e porque"
+  say "  rkhunter / chkrootkit — procuram assinaturas de rootkits antigos, dao"
+  say "    muitos falsos positivos com contentores e snaps, e nao encontram"
+  say "    nada que a linha de base acima nao encontre melhor."
+  say "  Falco / Tetragon — excelentes num cluster, onde a carga e homogenea."
+  say "    Numa estacao de trabalho produzem ruido constante e acabam ignorados."
+  say "    Monitorizacao ignorada e pior que nenhuma: da sensacao de cobertura."
+  say "  antivirus — num Linux de desenvolvimento encontra sobretudo malware de"
+  say "    Windows em anexos; nao cobre codigo de build nem disco roubado."
+}
+
+# =============================================================================
 # DESPACHO
 # =============================================================================
 say "toolchain.sh — fase: $PHASE $( (( APPLY )) && echo '[APLICAR]' || echo '[DRY-RUN]')"
@@ -876,6 +1135,8 @@ case "$PHASE" in
   sec)     fase_sec ;;
   obs)     fase_obs ;;
   cli)     fase_cli ;;
+  harden)  fase_harden ;;
+  monitor) fase_monitor ;;
   delonix) fase_delonix ;;
   all)
     # O delonix fica DE FORA do `all` de proposito: mexe em subuid/subgid,
@@ -883,13 +1144,14 @@ case "$PHASE" in
     # explicita, nao vir a reboque de um "instala tudo".
     fase_os; fase_rust "$@"; fase_go; fase_python; fase_node
     fase_k8s; fase_iac; fase_sec; fase_obs; fase_cli
+    fase_harden; fase_monitor
     say ""; say "Delonix NAO instalado: corre './toolchain.sh delonix --apply' a parte."
     ;;
   -h|--help|help)
     sed -n '2,45p' "$0"; exit 0 ;;
   *)
     say "fase desconhecida: $PHASE"
-    say "fases: doctor os rust go python node k8s iac sec obs cli delonix all"
+    say "fases: doctor os rust go python node k8s iac sec obs cli harden monitor delonix all"
     exit 2 ;;
 esac
 
