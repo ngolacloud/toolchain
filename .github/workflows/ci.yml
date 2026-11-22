@@ -44,9 +44,16 @@ jobs:
       - name: doctor
         run: ./toolchain.sh doctor
       - name: todas as fases em dry-run
+        # A saida e SEMPRE mostrada, agrupada por fase. Na primeira versao ia
+        # para /tmp/out e so aparecia em caso de falha: a CI provava "sai com 0"
+        # e nao mostrava o que o script faria em cada distribuicao — o que para
+        # um script de provisionamento e um teste fraco. Ver tambem: foi assim
+        # que o aviso de EPEL no Rocky passou por verificado sem o ser.
         run: |
           rc=0
           for f in os rust go python node k8s iac sec obs cli delonix; do
-            if ! ./toolchain.sh "$f" >/tmp/out 2>&1; then echo "::error::fase $f falhou"; cat /tmp/out; rc=1; fi
+            echo "::group::fase $f"
+            if ./toolchain.sh "$f" 2>&1; then :; else echo "::error::fase $f falhou"; rc=1; fi
+            echo "::endgroup::"
           done
           exit $rc
