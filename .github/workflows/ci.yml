@@ -1,0 +1,42 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck -S warning toolchain.sh
+
+  dry-run:
+    # Cada fase tem de correr em dry-run sem erros em cada familia de distro.
+    # O dry-run nao instala nada, por isso e seguro em CI.
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:24.04
+          - debian:12
+          - fedora:41
+          - rockylinux:9
+          - archlinux:latest
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    steps:
+      - name: dependencias minimas
+        run: |
+          if   command -v apt-get >/dev/null; then apt-get update && apt-get install -y bash curl ca-certificates git
+          elif command -v dnf     >/dev/null; then dnf install -y bash curl ca-certificates git
+          elif command -v pacman  >/dev/null; then pacman -Sy --noconfirm bash curl ca-certificates git
+          fi
+      - uses: actions/checkout@v4
+      - name: doctor
+        run: ./toolchain.sh doctor
+      - name: todas as fases em dry-run
+        run: |
+          rc=0
+          for f in os rust go python node k8s iac sec obs cli delonix; do
+            if ! ./toolchain.sh "$f" >/tmp/out 2>&1; then echo "::error::fase $f falhou"; cat /tmp/out; rc=1; fi
+          done
+          exit $rc

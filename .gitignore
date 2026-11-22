@@ -1,0 +1,3 @@
+# Estado e logs do proprio script
+*.log
+.local/
