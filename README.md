@@ -255,9 +255,24 @@ utilizador. É essa última que cobre o cenário mais provável: código de
 terceiros, executado por ti, a escalar.
 
 ```bash
-sudo ausearch -k persist_sudo -i | tail
-sudo ausearch -k root_exec -i | tail
+sudo ausearch -k persist_sudo -i -ts today
 ```
+
+O campo que torna a regra `root_exec` útil é o **`tty`**. Uma escalada que tu
+fizeste tem um terminal associado (`tty=pts4`); um `build.rs` de crate ou um
+`postinstall` de npm a chamar `sudo` corre **sem terminal** e aparece como
+`tty=(none)`. É essa a assinatura do cenário mais provável:
+
+```bash
+sudo ausearch -k root_exec -i -ts today | grep type=SYSCALL | grep 'tty=(none)' | grep -oE 'comm=\S+' | sort | uniq -c | sort -rn
+```
+
+Num dia normal devolve nada, ou só serviços do sistema.
+
+As ferramentas de consulta do auditd geram entradas ao serem usadas — cada
+`ausearch` aparece no registo que está a ler. O conjunto de regras exclui
+`ausearch`, `aureport` e `auditctl` com regras `never` colocadas **antes** da
+`always`: a primeira que casa decide.
 
 **Integridade dos ficheiros de pacotes**, com a ferramenta nativa de cada
 família: `debsums -c` no Debian, `rpm -Va` no Red Hat, `paccheck --md5sum` no

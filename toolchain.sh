@@ -1069,6 +1069,25 @@ fase_monitor() {
 -w $HOME/.ssh -p wa -k persist_ssh
 -w $HOME/.config/systemd/user -p wa -k persist_user_units
 -w $HOME/.config/autostart -p wa -k persist_autostart
+
+# As ferramentas de consulta do proprio auditd geram entradas ao serem usadas:
+# cada `ausearch` aparece no registo que esta a ler. Estas regras `never` vem
+# ANTES da regra `always` de proposito — a primeira que casa decide.
+-a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/ausearch
+-a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/aureport
+-a never,exit -F arch=b64 -S execve -F exe=/usr/sbin/auditctl
+
+# Cada execucao como root a partir de uma sessao de utilizador.
+#
+# O campo que torna isto util e o `tty`. Uma escalada que TU fizeste tem um
+# terminal: tty=pts4. Um build.rs de uma crate ou um postinstall de npm a
+# chamar sudo corre SEM terminal, e aparece como tty=(none). Essa e a
+# assinatura do cenario mais provavel numa maquina de desenvolvimento:
+#
+#   sudo ausearch -k root_exec -i -ts today | grep type=SYSCALL \
+#     | grep 'tty=(none)' | grep -oE 'comm=\S+' | sort | uniq -c | sort -rn
+#
+# Num dia normal: nada, ou so servicos do sistema.
 -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k root_exec
 EOF
       revert_note "sudo rm -f $rf && sudo augenrules --load"
