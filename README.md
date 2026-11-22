@@ -1,5 +1,7 @@
 # toolchain
 
+[![ci](https://github.com/ngolacloud/toolchain/actions/workflows/ci.yml/badge.svg)](https://github.com/ngolacloud/toolchain/actions/workflows/ci.yml)
+
 Script de provisionamento para estações de trabalho de **DevOps, Platform
 Engineering e SRE**, e para ambientes de desenvolvimento em **Rust, Go, Python
 e Node.js**.
@@ -28,6 +30,20 @@ Detecção por `ID` e `ID_LIKE` do `/etc/os-release`:
 | Red Hat | `dnf` | Fedora, RHEL, CentOS Stream, Rocky, AlmaLinux |
 | Arch | `pacman` | Arch, Manjaro, EndeavourOS, Garuda |
 | SUSE | `zypper` | openSUSE Leap, Tumbleweed, SLES |
+
+### O que a CI verifica, e o que não verifica
+
+A matriz corre as **11 fases em dry-run** em `ubuntu:24.04`, `debian:12`,
+`fedora:41`, `rockylinux:9` e `archlinux:latest`, com a saída de cada fase
+visível no log. Isso prova que o script corre nas quatro famílias, que a
+detecção por `ID`/`ID_LIKE` acerta, e que a tabela resolve um nome de pacote
+para cada binário — no Arch, por exemplo, sem um único "sem pacote em".
+
+O que **não** prova: o dry-run não instala. Um nome que exista mas aponte para
+o pacote errado só se descobre a instalar. Se encontrares um, o `run()` falha
+alto e o PR é bem-vindo.
+
+### Nomes de pacote e de binário
 
 Os nomes de pacote diferem entre famílias, e os nomes dos **binários** também.
 No Debian, `fd-find` instala `/usr/bin/fdfind` e `bat` instala `/usr/bin/batcat`
