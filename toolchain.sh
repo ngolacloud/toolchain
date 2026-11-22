@@ -999,8 +999,23 @@ fase_harden() {
 # =============================================================================
 BASELINE="$STATE_DIR/baseline"
 
+# Uma base escrita sem sudo utilizavel fica INCOMPLETA em silencio, e o
+# primeiro diff mostra mudancas falsas em massa — onde uma mudanca real passa
+# despercebida. Mais vale nenhuma base do que uma base cega.
+sudo_utilizavel() {
+  [ "$(id -u)" -eq 0 ] && return 0
+  $SUDO -n true 2>/dev/null && return 0
+  return 1
+}
+
 snapshot_persistencia() {
   local out="$1"; mkdir -p "$(dirname "$out")"
+  if ! sudo_utilizavel; then
+    no "sudo nao utilizavel sem senha: a base ficaria incompleta e NAO foi escrita"
+    warn "corre esta fase num terminal, onde o sudo pode pedir a senha:"
+    say  "    ./toolchain.sh monitor --apply"
+    return 1
+  fi
   {
     echo "## portas a escutar"
     $SUDO ss -lntuH 2>/dev/null | awk '{print $1, $5}' | sort -u
@@ -1090,7 +1105,7 @@ EOF
     mkdir -p "$BASELINE"
     local novo
     novo="$BASELINE/snapshot-$(date +%Y%m%d-%H%M%S).txt"
-    snapshot_persistencia "$novo"
+    if ! snapshot_persistencia "$novo"; then rm -f "$novo"; return 1; fi
     local ant
     ant=$(find "$BASELINE" -name 'snapshot-*.txt' ! -name "$(basename "$novo")" 2>/dev/null | sort | tail -1)
     if [ -z "$ant" ]; then
