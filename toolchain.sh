@@ -1071,7 +1071,8 @@ EOF
   # escrever em algum destes sitios para sobreviver a um reboot.
   if (( APPLY )); then
     mkdir -p "$BASELINE"
-    local novo="$BASELINE/snapshot-$(date +%Y%m%d-%H%M%S).txt"
+    local novo
+    novo="$BASELINE/snapshot-$(date +%Y%m%d-%H%M%S).txt"
     snapshot_persistencia "$novo"
     local ant
     ant=$(find "$BASELINE" -name 'snapshot-*.txt' ! -name "$(basename "$novo")" 2>/dev/null | sort | tail -1)
