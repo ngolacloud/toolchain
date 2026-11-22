@@ -1112,10 +1112,19 @@ EOF
 
       # Contar o que o kernel REALMENTE tem, e comparar com o que o ficheiro
       # pede. Reportar "carregadas" sem verificar e assumir.
+      # O ficheiro vive em /etc/audit/rules.d, que e 0750 root:root: um `grep`
+      # como utilizador normal devolve 0 por nao poder ler, e nao por o ficheiro
+      # estar vazio. Dai o $SUDO. Observado a 2026-11-22: reportava
+      # "15 de 0 regras activas", e a condicao 15 >= 0 dava ok com um
+      # denominador sem sentido.
       local n_pedidas n_activas
-      n_pedidas=$(grep -cE '^-[wa] ' "$rf" 2>/dev/null || echo 0)
+      n_pedidas=$($SUDO grep -cE '^-[wa] ' "$rf" 2>/dev/null || echo 0)
       n_activas=$($SUDO auditctl -l 2>/dev/null | grep -cE '^-[wa] ' || echo 0)
-      if [ "$rc_ar" -eq 0 ] && [ "${n_activas:-0}" -ge "${n_pedidas:-99}" ]; then
+      # Um denominador de 0 significa que NAO SE SABE quantas regras o ficheiro
+      # pede. Tratar isso como sucesso e o erro que esta linha evita.
+      if [ "${n_pedidas:-0}" -eq 0 ]; then
+        no "nao consegui contar as regras pedidas em $rf — resultado nao verificavel"
+      elif [ "$rc_ar" -eq 0 ] && [ "${n_activas:-0}" -ge "$n_pedidas" ]; then
         ok "$n_activas de $n_pedidas regras activas"
       else
         no "so $n_activas de $n_pedidas regras activas (augenrules exit $rc_ar)"
