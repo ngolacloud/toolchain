@@ -73,7 +73,10 @@ C_OK=$'\033[32m'; C_NO=$'\033[31m'; C_WARN=$'\033[33m'; C_DIM=$'\033[2m'; C_Z=$'
 say()  { printf '%s\n' "$*" | tee -a "$LOG"; }
 head2() { say ""; say "${C_DIM}── $* ${C_Z}"; }
 ok()   { say "  ${C_OK}ok${C_Z}      $*"; }
-no()   { say "  ${C_NO}!! FALHOU${C_Z} $*"; }
+FALHAS=0
+# Contar em vez de confiar no exit code da ultima instrucao. Uma fase falha se
+# ALGUM passo reportou falha, nao se a sua ultima linha devolveu != 0.
+no()   { FALHAS=$((FALHAS+1)); say "  ${C_NO}!! FALHOU${C_Z} $*"; }
 warn() { say "  ${C_WARN}aviso${C_Z}   $*"; }
 skip() { say "  ${C_DIM}saltado${C_Z} $*"; }
 dry()  { say "  ${C_DIM}[dry]${C_Z}   $*"; }
@@ -1295,7 +1298,7 @@ fase_selftest() {
     || { no "run() pode executar a descricao como comando"; falhas=$((falhas+1)); }
 
   say ""
-  [ "$falhas" -eq 0 ] && ok "selftest: tudo passou" || { no "selftest: $falhas verificacoes falharam"; return 1; }
+  [ "$falhas" -eq 0 ] && ok "selftest: tudo passou" || say "  selftest: $falhas verificacoes falharam"
 }
 
 # =============================================================================
@@ -1304,23 +1307,22 @@ fase_selftest() {
 say "toolchain.sh — fase: $PHASE $( (( APPLY )) && echo '[APLICAR]' || echo '[DRY-RUN]')"
 say "log: $LOG"
 
-RC=0
 case "$PHASE" in
-  doctor)  fase_doctor || RC=$? ;;
-  os)      fase_os || RC=$? ;;
+  doctor)  fase_doctor ;;
+  os)      fase_os ;;
   rust)    fase_rust "$@" ;;
-  go)      fase_go || RC=$? ;;
-  python)  fase_python || RC=$? ;;
-  node)    fase_node || RC=$? ;;
-  k8s)     fase_k8s || RC=$? ;;
-  iac)     fase_iac || RC=$? ;;
-  sec)     fase_sec || RC=$? ;;
-  obs)     fase_obs || RC=$? ;;
-  cli)     fase_cli || RC=$? ;;
-  selftest) fase_selftest || RC=$? ;;
-  harden)  fase_harden || RC=$? ;;
-  monitor) fase_monitor || RC=$? ;;
-  delonix) fase_delonix || RC=$? ;;
+  go)      fase_go ;;
+  python)  fase_python ;;
+  node)    fase_node ;;
+  k8s)     fase_k8s ;;
+  iac)     fase_iac ;;
+  sec)     fase_sec ;;
+  obs)     fase_obs ;;
+  cli)     fase_cli ;;
+  selftest) fase_selftest ;;
+  harden)  fase_harden ;;
+  monitor) fase_monitor ;;
+  delonix) fase_delonix ;;
   all)
     # O delonix fica DE FORA do `all` de proposito: mexe em subuid/subgid,
     # AppArmor e politica de seguranca do host, e isso merece uma decisao
@@ -1354,5 +1356,11 @@ fi
 # Propagar a falha. Sem isto o script acaba sempre em `say`, sai 0, e um teste
 # que FALHOU deixa a CI verde — o pior resultado possivel num gate.
 # Encontrado a 2026-11-22 pelo proprio selftest.
-[ "$RC" -ne 0 ] && say "" && say "fase $PHASE terminou com falhas (exit $RC)"
-exit "$RC"
+# O exit code reflecte quantos passos falharam, nao o que a ultima linha de uma
+# funcao devolveu por acidente.
+if [ "$FALHAS" -gt 0 ]; then
+  say ""
+  say "fase $PHASE: $FALHAS passo(s) falharam"
+  exit 1
+fi
+exit 0
