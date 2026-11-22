@@ -879,11 +879,25 @@ fase_harden() {
   # correm com a tua identidade. Com NOPASSWD:ALL correm `sudo` sem prompt, e a
   # escalada e silenciosa. Uma senha nao para um atacante determinado, mas
   # quebra a automatizacao.
-  local np
-  np=$($SUDO grep -rlE '^[^#].*NOPASSWD:\s*ALL' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | head -3)
+  # `sudo -l` mostra a POLITICA EFECTIVA, que e o que interessa. Um ficheiro em
+  # sudoers.d pode conter NOPASSWD:ALL e nao ter efeito nenhum: as regras sao
+  # todas avaliadas e a ULTIMA que casa ganha, por isso um `%sudo ALL=(ALL:ALL)
+  # ALL` declarado DEPOIS do @includedir sobrepoe-se a ele.
+  #
+  # NAO usar `sudo -n true` como prova: ele tem exito sempre que exista uma
+  # credencial em cache de um sudo recente (~15 min). Verificado a 2026-11-22,
+  # num caso em que `sudo -n true` passava, o ficheiro continha NOPASSWD:ALL, e
+  # o sudo pedia senha de facto — a regra estava escrita e inactiva.
+  local pol np
+  if pol=$($SUDO -n -l 2>/dev/null); then
+    np=$(grep -E "NOPASSWD" <<<"$pol" | head -3)
+  else
+    warn "nao foi possivel ler a politica sem senha; corre esta fase num terminal"
+    np=""
+  fi
   if [ -z "$np" ]; then ok "sem regras NOPASSWD:ALL"
   else
-    warn "NOPASSWD:ALL em: $(tr '\n' ' ' <<<"$np")"
+    warn "politica efectiva com NOPASSWD: $(tr '\n' ' ' <<<"$np")"
     warn "qualquer processo teu obtem root sem prompt — incluindo scripts de build"
     say  "    Se precisas de comandos sem senha, declara ESSES em vez de ALL:"
     say  "      walter ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart <servico>"
@@ -895,7 +909,10 @@ fase_harden() {
         $SUDO sed -i -E 's/^([^#].*NOPASSWD:[[:space:]]*ALL.*)$/# desactivado por toolchain harden: \1/' "$f"
       done
       if $SUDO visudo -c >/dev/null 2>&1; then
-        $SUDO -n true 2>/dev/null && no "ainda passa sem senha — verifica $np" || ok "sudo passa a pedir senha"
+        # -k invalida a credencial em cache: sem isto o teste passa sempre.
+        $SUDO -k
+        if $SUDO -n true 2>/dev/null; then no "ainda passa sem senha: ha outra regra activa"
+        else ok "sudo passa a pedir senha"; fi
       else
         no "visudo -c reprovou: a restaurar do backup"
         for f in $np; do $SUDO cp -a "$f.bak-toolchain" "$f"; done
