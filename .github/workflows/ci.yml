@@ -26,10 +26,20 @@ jobs:
     steps:
       - name: dependencias minimas
         run: |
-          if   command -v apt-get >/dev/null; then apt-get update && apt-get install -y bash curl ca-certificates git
-          elif command -v dnf     >/dev/null; then dnf install -y bash curl ca-certificates git
-          elif command -v pacman  >/dev/null; then pacman -Sy --noconfirm bash curl ca-certificates git
+          # Rocky/UBI trazem curl-minimal, que CONFLITA com o pacote curl.
+          # Arch: `-Sy` seguido de install sem `-u` produz uma actualizacao
+          # parcial e quebra dependencias (openssl). Em ambos os casos, so se
+          # instala o que falta de facto.
+          need() { command -v "$1" >/dev/null 2>&1 || echo "$1"; }
+          if command -v apt-get >/dev/null; then
+            apt-get update -qq
+            apt-get install -y --no-install-recommends ca-certificates git $(need curl)
+          elif command -v dnf >/dev/null; then
+            dnf install -y --setopt=install_weak_deps=False ca-certificates git $(need curl)
+          elif command -v pacman >/dev/null; then
+            pacman -Syu --noconfirm --needed ca-certificates git $(need curl)
           fi
+          for b in bash curl git; do command -v "$b" >/dev/null || { echo "::error::$b em falta"; exit 1; }; done
       - uses: actions/checkout@v4
       - name: doctor
         run: ./toolchain.sh doctor

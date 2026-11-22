@@ -225,7 +225,7 @@ fase_doctor() {
   head2 "linguagens"
   have rustup && ok "rustup: $(rustup show active-toolchain 2>/dev/null | head -1)" || warn "rustup ausente"
   have cargo  && say "    cargo $(cargo --version 2>/dev/null | awk '{print $2}')  ·  target/ somados: $(
-      find "$HOME" -maxdepth 6 -type d -name target -prune 2>/dev/null -exec du -xsm {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f GB", s/1024}')"
+      find "$HOME" -maxdepth 6 -type d -name target -prune -exec du -xsm {} + 2>/dev/null | awk '{s+=$1} END {printf "%.1f GB", s/1024}')"
   have go     && ok "go: $(go version 2>/dev/null | awk '{print $3}')" || warn "go ausente"
   have uv     && ok "uv: $(uv --version 2>/dev/null | awk '{print $2}')" || warn "uv ausente (gestor Python recomendado)"
   have python3 && say "    python3 $(python3 -V 2>&1 | awk '{print $2}')"
@@ -659,7 +659,9 @@ print(a[0] if a else ""); print(c[0] if c else ""); print(d.get("tag_name",""))
   [ -n "$aurl" ] || { no "$name: nenhum asset de $repo@${tag:-latest} corresponde a /$apat/"; return 1; }
   [ -n "$curl_" ] || { no "$name: $repo@$tag nao publica checksums — NAO instalado"; return 1; }
 
-  local tmp; tmp=$(mktemp -d); local f="$tmp/$(basename "$aurl")"
+  local tmp f
+  tmp=$(mktemp -d)
+  f="$tmp/$(basename "$aurl")"
   curl -fsSL --proto '=https' --tlsv1.2 -o "$f" "$aurl" || { no "$name: download de $aurl"; rm -rf "$tmp"; return 1; }
   curl -fsSL -o "$tmp/SUMS" "$curl_" || { no "$name: download dos checksums"; rm -rf "$tmp"; return 1; }
 
@@ -674,7 +676,8 @@ print(a[0] if a else ""); print(c[0] if c else ""); print(d.get("tag_name",""))
     *.tar.gz|*.tgz) tar -xzf "$f" -C "$tmp" ;;
     *.zip)          unzip -qo "$f" -d "$tmp" ;;
   esac
-  local src; src=$(find "$tmp" -type f -name "$name" -perm -u+x 2>/dev/null | head -1)
+  local src
+  src=$(find "$tmp" -type f -name "$name" -perm -u+x 2>/dev/null | head -1)
   [ -n "$src" ] || src=$(find "$tmp" -type f -name "$name" | head -1)
   if [ -n "$src" ]; then
     install -m 0755 "$src" "$BIN/$name" && ok "$name $tag -> $BIN/$name"
